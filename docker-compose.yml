@@ -9,11 +9,12 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    env_file:
-      - .env
     environment:
-      - MCP_TRANSPORT=http
       - MCP_HTTP_PORT=8080
-      - AUTH_MODE=${AUTH_MODE:-gateway}
-
-volumes: {}
+      - MCP_HTTP_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

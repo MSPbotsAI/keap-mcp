@@ -32,10 +32,8 @@ COPY --from=builder --chown=keap:keap /app/src /app/src
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-ENV MCP_TRANSPORT=http
 ENV MCP_HTTP_PORT=8080
 ENV MCP_HTTP_HOST=0.0.0.0
-ENV AUTH_MODE=gateway
 
 USER keap
 
@@ -47,7 +45,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 CMD ["python", "-m", "keap_mcp"]
 
 LABEL org.opencontainers.image.title="keap-mcp"
-LABEL org.opencontainers.image.description="Keap MCP Service — stateless HTTP MCP service"
+LABEL org.opencontainers.image.description="Keap (Infusionsoft) CRM MCP server — exposes Contacts, Tags, Opportunities, Notes, Tasks, Campaigns, and Users as MCP tools"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.revision="${COMMIT_SHA}"

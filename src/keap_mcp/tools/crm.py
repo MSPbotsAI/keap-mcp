@@ -3,104 +3,107 @@
 Tool naming convention: keap_<action>_<resource>
 """
 
-import json
 from collections.abc import Callable
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
+from .._json import dump_json_capped
 from ..api_client import KeapClient, KeapError
+from ._common import MAX_LIMIT, NO_TOKEN
 
-_NO_CREDS = (
-    "Error: No Keap credentials configured. Set KEAP_ACCESS_TOKEN or use AUTH_MODE=gateway."
-)
+_LIMIT_DESC = "Max results per page (default 20, hard cap 200)."
+
+
+def _clamp_limit(limit: int) -> int:
+    return min(limit, MAX_LIMIT)
 
 
 def register(mcp: FastMCP, client_factory: Callable[[], KeapClient | None]) -> None:
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_contacts(
-        given_name: str | None = None,
-        family_name: str | None = None,
-        email: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-        order: str | None = None,
+        given_name: Annotated[str | None, Field(description="Filter by first name.")] = None,
+        family_name: Annotated[str | None, Field(description="Filter by last name.")] = None,
+        email: Annotated[str | None, Field(description="Filter by email address.")] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
+        order: Annotated[
+            str | None,
+            Field(description='Sort field: "id", "date_created", "last_updated", "name", or "email".'),
+        ] = None,
     ) -> str:
-        """List contacts.
-
-        API: GET /contacts
-
-        Args:
-            given_name: Filter by first name.
-            family_name: Filter by last name.
-            email: Filter by email address.
-            limit: Max results per page (default 20).
-            offset: Pagination offset.
-            order: Sort field, e.g. "id", "date_created", "last_updated", "name", "email".
-        """
+        """List contacts, optionally filtered by name or email."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         params = {
             "given_name": given_name,
             "family_name": family_name,
             "email": email,
-            "limit": limit,
+            "limit": _clamp_limit(limit),
             "offset": offset,
             "order": order,
         }
         try:
             result = await client.get("/contacts", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
-    async def keap_get_contact(contact_id: str, optional_properties: str | None = None) -> str:
-        """Retrieve a single contact by ID.
-
-        API: GET /contacts/{id}
-
-        Args:
-            contact_id: The contact's unique ID.
-            optional_properties: Comma-separated list of extra fields to include,
-                e.g. "custom_fields,job_title,lead_source_id".
-        """
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def keap_get_contact(
+        contact_id: Annotated[str, Field(description="The contact's unique ID.")],
+        optional_properties: Annotated[
+            str | None,
+            Field(
+                description='Comma-separated extra fields to include, e.g. "custom_fields,job_title,lead_source_id".'
+            ),
+        ] = None,
+    ) -> str:
+        """Retrieve a single contact by ID."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         try:
             result = await client.get(
                 f"/contacts/{contact_id}", params={"optional_properties": optional_properties}
             )
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     async def keap_create_contact(
-        given_name: str | None = None,
-        family_name: str | None = None,
-        email_addresses: list[dict] | None = None,
-        phone_numbers: list[dict] | None = None,
-        addresses: list[dict] | None = None,
-        custom_fields: list[dict] | None = None,
+        given_name: Annotated[str | None, Field(description="First name.")] = None,
+        family_name: Annotated[str | None, Field(description="Last name.")] = None,
+        email_addresses: Annotated[
+            list[dict] | None,
+            Field(description='List of dicts, e.g. [{"email": "a@b.com", "field": "EMAIL1"}].'),
+        ] = None,
+        phone_numbers: Annotated[
+            list[dict] | None,
+            Field(description='List of dicts, e.g. [{"number": "555-0100", "field": "PHONE1"}].'),
+        ] = None,
+        addresses: Annotated[
+            list[dict] | None,
+            Field(
+                description=(
+                    'List of dicts, e.g. [{"line1": "...", "locality": "...", "region": "...", '
+                    '"postal_code": "...", "country_code": "US", "field": "BILLING"}].'
+                )
+            ),
+        ] = None,
+        custom_fields: Annotated[
+            list[dict] | None,
+            Field(description='List of dicts, e.g. [{"id": 1, "content": "value"}].'),
+        ] = None,
     ) -> str:
-        """Create a contact. Must include at least one email address or phone number.
-
-        API: POST /contacts
-
-        Args:
-            given_name: First name.
-            family_name: Last name.
-            email_addresses: List of dicts, e.g. [{"email": "a@b.com", "field": "EMAIL1"}].
-            phone_numbers: List of dicts, e.g. [{"number": "555-0100", "field": "PHONE1"}].
-            addresses: List of dicts, e.g. [{"line1": "...", "locality": "...", "region": "...",
-                "postal_code": "...", "country_code": "US", "field": "BILLING"}].
-            custom_fields: List of dicts, e.g. [{"id": 1, "content": "value"}].
-        """
+        """Create a contact. Must include at least one email address or phone number."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         body = {
             "given_name": given_name,
             "family_name": family_name,
@@ -110,170 +113,146 @@ def register(mcp: FastMCP, client_factory: Callable[[], KeapClient | None]) -> N
             "custom_fields": custom_fields,
         }
         try:
-            result = await client.post("/contacts", {k: v for k, v in body.items() if v is not None})
-            return json.dumps(result, indent=2)
+            result = await client.post(
+                "/contacts", {k: v for k, v in body.items() if v is not None}
+            )
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
-    async def keap_list_contact_tags(contact_id: str, limit: int = 20, offset: int = 0) -> str:
-        """List the tags applied to a contact.
-
-        API: GET /contacts/{contactId}/tags
-
-        Args:
-            contact_id: The contact's unique ID.
-            limit: Max results per page.
-            offset: Pagination offset.
-        """
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def keap_list_contact_tags(
+        contact_id: Annotated[str, Field(description="The contact's unique ID.")],
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
+    ) -> str:
+        """List the tags applied to a contact."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         try:
             result = await client.get(
-                f"/contacts/{contact_id}/tags", params={"limit": limit, "offset": offset}
+                f"/contacts/{contact_id}/tags",
+                params={"limit": _clamp_limit(limit), "offset": offset},
             )
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
-    async def keap_apply_tags_to_contact(contact_id: str, tag_ids: list[int]) -> str:
-        """Apply one or more tags to a contact.
-
-        API: POST /contacts/{contactId}/tags
-
-        Args:
-            contact_id: The contact's unique ID.
-            tag_ids: Required. List of tag IDs to apply.
-        """
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    async def keap_apply_tags_to_contact(
+        contact_id: Annotated[str, Field(description="The contact's unique ID.")],
+        tag_ids: Annotated[list[int], Field(description="List of tag IDs to apply.")],
+    ) -> str:
+        """Apply one or more tags to a contact."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         try:
             result = await client.post(f"/contacts/{contact_id}/tags", {"tagIds": tag_ids})
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_tags(
-        category: int | None = None,
-        name: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
+        category: Annotated[int | None, Field(description="Filter by tag category ID.")] = None,
+        name: Annotated[str | None, Field(description="Filter by tag name.")] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
     ) -> str:
-        """List all tags defined in the app.
-
-        API: GET /tags
-
-        Args:
-            category: Filter by tag category ID.
-            name: Filter by tag name.
-            limit: Max results per page.
-            offset: Pagination offset.
-        """
+        """List all tags defined in the app."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
-        params = {"category": category, "name": name, "limit": limit, "offset": offset}
+            return NO_TOKEN
+        params = {"category": category, "name": name, "limit": _clamp_limit(limit), "offset": offset}
         try:
             result = await client.get("/tags", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_opportunities(
-        user_id: int | None = None,
-        stage_id: int | None = None,
-        search_term: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-        order: str | None = None,
+        user_id: Annotated[int | None, Field(description="Filter by the owning user's ID.")] = None,
+        stage_id: Annotated[int | None, Field(description="Filter by pipeline stage ID.")] = None,
+        search_term: Annotated[str | None, Field(description="Free-text search.")] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
+        order: Annotated[
+            str | None,
+            Field(
+                description='Sort field: "next_action", "opportunity_name", "contact_name", or "date_created".'
+            ),
+        ] = None,
     ) -> str:
-        """List sales opportunities (deals).
-
-        API: GET /opportunities
-
-        Args:
-            user_id: Filter by the owning user's ID.
-            stage_id: Filter by pipeline stage ID.
-            search_term: Free-text search.
-            limit: Max results per page.
-            offset: Pagination offset.
-            order: Sort field, e.g. "next_action", "opportunity_name", "contact_name", "date_created".
-        """
+        """List sales opportunities (deals)."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         params = {
             "user_id": user_id,
             "stage_id": stage_id,
             "search_term": search_term,
-            "limit": limit,
+            "limit": _clamp_limit(limit),
             "offset": offset,
             "order": order,
         }
         try:
             result = await client.get("/opportunities", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
-    async def keap_get_opportunity(opportunity_id: str, optional_properties: str | None = None) -> str:
-        """Retrieve a single opportunity by ID.
-
-        API: GET /opportunities/{opportunityId}
-
-        Args:
-            opportunity_id: The opportunity's unique ID.
-            optional_properties: Comma-separated list of extra fields to include.
-        """
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def keap_get_opportunity(
+        opportunity_id: Annotated[str, Field(description="The opportunity's unique ID.")],
+        optional_properties: Annotated[
+            str | None, Field(description="Comma-separated list of extra fields to include.")
+        ] = None,
+    ) -> str:
+        """Retrieve a single opportunity by ID."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         try:
             result = await client.get(
-                f"/opportunities/{opportunity_id}", params={"optional_properties": optional_properties}
+                f"/opportunities/{opportunity_id}",
+                params={"optional_properties": optional_properties},
             )
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     async def keap_create_opportunity(
-        contact_id: int,
-        stage_id: int,
-        opportunity_title: str,
-        user_id: int | None = None,
-        next_action_date: str | None = None,
-        next_action_notes: str | None = None,
-        opportunity_notes: str | None = None,
-        estimated_close_date: str | None = None,
-        projected_revenue_low: float | None = None,
-        projected_revenue_high: float | None = None,
+        contact_id: Annotated[int, Field(description="The contact ID this opportunity is for.")],
+        stage_id: Annotated[int, Field(description="The pipeline stage ID to place it in.")],
+        opportunity_title: Annotated[str, Field(description="Title of the opportunity.")],
+        user_id: Annotated[int | None, Field(description="The owning user's ID.")] = None,
+        next_action_date: Annotated[
+            str | None, Field(description="ISO 8601 date/time for the next action.")
+        ] = None,
+        next_action_notes: Annotated[
+            str | None, Field(description="Notes for the next action.")
+        ] = None,
+        opportunity_notes: Annotated[
+            str | None, Field(description="General notes on the opportunity.")
+        ] = None,
+        estimated_close_date: Annotated[
+            str | None, Field(description="ISO 8601 date for the estimated close.")
+        ] = None,
+        projected_revenue_low: Annotated[
+            float | None, Field(description="Low end of the projected revenue range.")
+        ] = None,
+        projected_revenue_high: Annotated[
+            float | None, Field(description="High end of the projected revenue range.")
+        ] = None,
     ) -> str:
-        """Create a sales opportunity (deal).
-
-        API: POST /opportunities
-
-        Args:
-            contact_id: Required. The contact ID this opportunity is for.
-            stage_id: Required. The pipeline stage ID to place it in.
-            opportunity_title: Required. Title of the opportunity.
-            user_id: The owning user's ID.
-            next_action_date: ISO 8601 date/time for the next action.
-            next_action_notes: Notes for the next action.
-            opportunity_notes: General notes on the opportunity.
-            estimated_close_date: ISO 8601 date for the estimated close.
-            projected_revenue_low: Low end of the projected revenue range.
-            projected_revenue_high: High end of the projected revenue range.
-        """
+        """Create a sales opportunity (deal)."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         body = {
             "contact": {"id": contact_id},
             "stage": {"id": stage_id},
@@ -287,60 +266,53 @@ def register(mcp: FastMCP, client_factory: Callable[[], KeapClient | None]) -> N
             "projected_revenue_high": projected_revenue_high,
         }
         try:
-            result = await client.post("/opportunities", {k: v for k, v in body.items() if v is not None})
-            return json.dumps(result, indent=2)
+            result = await client.post(
+                "/opportunities", {k: v for k, v in body.items() if v is not None}
+            )
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_notes(
-        contact_id: int | None = None,
-        user_id: int | None = None,
-        limit: int = 20,
-        offset: int = 0,
+        contact_id: Annotated[int | None, Field(description="Filter by contact ID.")] = None,
+        user_id: Annotated[
+            int | None, Field(description="Filter by the note's owning user ID.")
+        ] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
     ) -> str:
-        """List notes.
-
-        API: GET /notes
-
-        Args:
-            contact_id: Filter by contact ID.
-            user_id: Filter by the note's owning user ID.
-            limit: Max results per page.
-            offset: Pagination offset.
-        """
+        """List notes."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
-        params = {"contact_id": contact_id, "user_id": user_id, "limit": limit, "offset": offset}
+            return NO_TOKEN
+        params = {
+            "contact_id": contact_id,
+            "user_id": user_id,
+            "limit": _clamp_limit(limit),
+            "offset": offset,
+        }
         try:
             result = await client.get("/notes", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     async def keap_create_note(
-        contact_id: int,
-        title: str | None = None,
-        body: str | None = None,
-        type: str | None = None,
-        user_id: int | None = None,
+        contact_id: Annotated[int, Field(description="The contact this note is attached to.")],
+        title: Annotated[str | None, Field(description="Note title.")] = None,
+        body: Annotated[str | None, Field(description="Note body text.")] = None,
+        type: Annotated[
+            str | None,
+            Field(description='One of "Appointment", "Call", "Email", "Fax", "Letter", "Other".'),
+        ] = None,
+        user_id: Annotated[int | None, Field(description="The owning user's ID.")] = None,
     ) -> str:
-        """Create a note on a contact. Must include at least a title or body.
-
-        API: POST /notes
-
-        Args:
-            contact_id: Required. The contact this note is attached to.
-            title: Note title.
-            body: Note body text.
-            type: One of "Appointment", "Call", "Email", "Fax", "Letter", "Other".
-            user_id: The owning user's ID.
-        """
+        """Create a note on a contact. Must include at least a title or body."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         payload = {
             "contact_id": contact_id,
             "title": title,
@@ -349,81 +321,68 @@ def register(mcp: FastMCP, client_factory: Callable[[], KeapClient | None]) -> N
             "user_id": user_id,
         }
         try:
-            result = await client.post("/notes", {k: v for k, v in payload.items() if v is not None})
-            return json.dumps(result, indent=2)
+            result = await client.post(
+                "/notes", {k: v for k, v in payload.items() if v is not None}
+            )
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_tasks(
-        contact_id: int | None = None,
-        user_id: int | None = None,
-        completed: bool | None = None,
-        has_due_date: bool | None = None,
-        limit: int = 20,
-        offset: int = 0,
-        order: str | None = None,
+        contact_id: Annotated[int | None, Field(description="Filter by related contact ID.")] = None,
+        user_id: Annotated[
+            int | None, Field(description="Filter by the assigned user's ID.")
+        ] = None,
+        completed: Annotated[
+            bool | None, Field(description="Filter by completion status.")
+        ] = None,
+        has_due_date: Annotated[
+            bool | None, Field(description="Filter to tasks that have (or don't have) a due date.")
+        ] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
+        order: Annotated[str | None, Field(description="Sort field.")] = None,
     ) -> str:
-        """List tasks.
-
-        API: GET /tasks
-
-        Args:
-            contact_id: Filter by related contact ID.
-            user_id: Filter by the assigned user's ID.
-            completed: Filter by completion status.
-            has_due_date: Filter to tasks that have (or don't have) a due date.
-            limit: Max results per page.
-            offset: Pagination offset.
-            order: Sort field.
-        """
+        """List tasks."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         params = {
             "contact_id": contact_id,
             "user_id": user_id,
             "completed": completed,
             "has_due_date": has_due_date,
-            "limit": limit,
+            "limit": _clamp_limit(limit),
             "offset": offset,
             "order": order,
         }
         try:
             result = await client.get("/tasks", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False))
     async def keap_create_task(
-        title: str,
-        due_date: str,
-        description: str | None = None,
-        type: str | None = None,
-        priority: str | None = None,
-        contact_id: int | None = None,
-        user_id: int | None = None,
-        remind_time: int | None = None,
+        title: Annotated[str, Field(description="Task title.")],
+        due_date: Annotated[str, Field(description="ISO 8601 date/time the task is due.")],
+        description: Annotated[str | None, Field(description="Task description.")] = None,
+        type: Annotated[str | None, Field(description="Task type/category.")] = None,
+        priority: Annotated[str | None, Field(description="Task priority.")] = None,
+        contact_id: Annotated[int | None, Field(description="Related contact ID.")] = None,
+        user_id: Annotated[int | None, Field(description="Assigned user's ID.")] = None,
+        remind_time: Annotated[
+            int | None,
+            Field(
+                description="Minutes before due_date to remind: one of 5/10/15/30/60/120/240/480/1440/2880."
+            ),
+        ] = None,
     ) -> str:
-        """Create a task. Must include at least a title and due date.
-
-        API: POST /tasks
-
-        Args:
-            title: Required. Task title.
-            due_date: Required. ISO 8601 date/time the task is due.
-            description: Task description.
-            type: Task type/category.
-            priority: Task priority.
-            contact_id: Related contact ID.
-            user_id: Assigned user's ID.
-            remind_time: Minutes before due_date to remind, one of
-                5/10/15/30/60/120/240/480/1440/2880.
-        """
+        """Create a task. Must include at least a title and due date."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         body = {
             "title": title,
             "due_date": due_date,
@@ -436,65 +395,61 @@ def register(mcp: FastMCP, client_factory: Callable[[], KeapClient | None]) -> N
         }
         try:
             result = await client.post("/tasks", {k: v for k, v in body.items() if v is not None})
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_campaigns(
-        search_text: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-        order: str | None = None,
+        search_text: Annotated[
+            str | None, Field(description="Free-text search on campaign name.")
+        ] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
+        order: Annotated[
+            str | None,
+            Field(description='Sort field: "id", "name", "published_date", "status", or "category".'),
+        ] = None,
     ) -> str:
-        """List marketing/automation campaigns.
-
-        API: GET /campaigns
-
-        Args:
-            search_text: Free-text search on campaign name.
-            limit: Max results per page.
-            offset: Pagination offset.
-            order: Sort field, e.g. "id", "name", "published_date", "status", "category".
-        """
+        """List marketing/automation campaigns."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
-        params = {"search_text": search_text, "limit": limit, "offset": offset, "order": order}
+            return NO_TOKEN
+        params = {
+            "search_text": search_text,
+            "limit": _clamp_limit(limit),
+            "offset": offset,
+            "order": order,
+        }
         try:
             result = await client.get("/campaigns", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def keap_list_users(
-        include_inactive: bool | None = None,
-        include_partners: bool | None = None,
-        limit: int = 20,
-        offset: int = 0,
+        include_inactive: Annotated[
+            bool | None, Field(description="Include inactive users.")
+        ] = None,
+        include_partners: Annotated[
+            bool | None, Field(description="Include partner users.")
+        ] = None,
+        limit: Annotated[int, Field(description=_LIMIT_DESC)] = 20,
+        offset: Annotated[int, Field(description="Pagination offset.")] = 0,
     ) -> str:
-        """List users of the Keap app.
-
-        API: GET /users
-
-        Args:
-            include_inactive: Include inactive users.
-            include_partners: Include partner users.
-            limit: Max results per page.
-            offset: Pagination offset.
-        """
+        """List users of the Keap app."""
         client = client_factory()
         if client is None:
-            return _NO_CREDS
+            return NO_TOKEN
         params = {
             "include_inactive": include_inactive,
             "include_partners": include_partners,
-            "limit": limit,
+            "limit": _clamp_limit(limit),
             "offset": offset,
         }
         try:
             result = await client.get("/users", params=params)
-            return json.dumps(result, indent=2)
+            return dump_json_capped(result)
         except KeapError as e:
-            return f"Error: {e}"
+            return e.to_envelope()
